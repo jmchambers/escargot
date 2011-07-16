@@ -2,6 +2,7 @@ require 'elasticsearch'
 require 'escargot/activerecord_ex'
 require 'escargot/elasticsearch_ex'
 require 'escargot/mongo_mapper_es_plugin'
+require 'escargot/enumerable_ex'
 require 'escargot/local_indexing'
 require 'escargot/distributed_indexing'
 require 'escargot/queue_backend/base'
@@ -55,10 +56,22 @@ module Escargot
   # record that has been deleted on the database  
   def self.search(query, options = {}, call_by_instance_method = false)
     hits = Escargot.search_hits(query, options, call_by_instance_method)
-    hits_ar = hits.map{|hit| hit.to_activerecord}
+    records = find_hits_in_db(hits)
     results = WillPaginate::Collection.new(hits.current_page, hits.per_page, hits.total_entries)
-    results.replace(hits_ar)
+    results.replace(records)
     results
+  end
+  
+  def self.find_hits_in_db(hits)
+    #fetch records from db in one call and then reorder to match search result ordering
+    model_class = get_model_class_from_hit_type(hits.first)
+    ranked_ids = hits.map(&:_id) #TODO check whether we have _id or id with active record...
+    records = model_class.find(ranked_ids).reorder_by(ranked_ids, &Proc.new {|r| r.id.to_s})
+    records
+  end
+  
+  def self.get_model_class_from_hit_type(hit)
+    model_class = hit._type.gsub(/-/,'/').classify.constantize
   end
 
   # counts the number of results for this query.
