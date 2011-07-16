@@ -3,7 +3,7 @@ def init_elastic_Search_client
 
 	unless File.exists?(path_to_elasticsearch_config_file)
 	  Rails.logger.warn "No config/escargot.yaml file found, connecting to localhost:9200"
-	  $elastic_search_client = ElasticSearch.new("localhost:9200")
+	  $elastic_search_client = ElasticSearch.new("http://localhost:9200")
 	else 
 	  config = YAML.load_file(path_to_elasticsearch_config_file)
 	  $elastic_search_client = ElasticSearch.new(config["host"] + ":" + config["port"].to_s, :timeout => 20)
