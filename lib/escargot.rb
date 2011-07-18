@@ -64,9 +64,17 @@ module Escargot
   
   def self.find_hits_in_db(hits)
     #fetch records from db in one call and then reorder to match search result ordering
+    return Array.new if hits.empty?
     model_class = get_model_class_from_hit_type(hits.first)
     ranked_ids = hits.map(&:_id) #TODO check whether we have _id or id with active record...
-    records = model_class.find(ranked_ids).reorder_by(ranked_ids, &Proc.new {|r| r.id.to_s})
+    unordered_records = model_class.find(ranked_ids)
+    if unordered_records.is_a?(Array)
+      records = unordered_records.reorder_by(ranked_ids, &Proc.new {|r| r.id.to_s})
+    elsif unordered_records.nil?
+      records = []
+    else
+      records = [unordered_records]
+    end
     records
   end
   

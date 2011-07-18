@@ -10,6 +10,8 @@ module Escargot
     module ClassMethods
       attr_accessor :index_name
       attr_accessor :update_index_policy
+      attr_accessor :mapping
+      attr_accessor :index_options
 
       # defines an elastic search index. Valid options:
       #
