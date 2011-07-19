@@ -177,14 +177,22 @@ module Escargot
         options[:type]  ||= self.class.name.underscore.singularize.gsub(/\//,'-')
         options[:id]    ||= self.id.to_s
         
-        $elastic_search_client.index(
-          self.respond_to?(:indexed_json_document) ? self.indexed_json_document : self.to_json,
-          options
-        )
-        
+        #bulk-ready client passed?
+        if options.has_key?(:bulk_client)
+          bulk_loading = true
+          doc = self.respond_to?(:indexed_attributes) ? self.indexed_attributes : self.attributes
+          client = options.delete(:bulk_client)
+        else
+          bulk_loading = false
+          doc = self.respond_to?(:indexed_json_document) ? self.indexed_json_document : self.to_json
+          client = $elastic_search_client
+        end
+
+        client.index(doc, options)
+
         ## !!!!! passing :refresh => true should make ES auto-refresh only the affected
         ## shards but as of Oct 25 2010 with ES 0.12 && rubberband 0.0.2 that's not the case
-        if options[:refresh]
+        if options[:refresh] and not bulk_loading
           self.class.refresh_index(options[:index])
         end
           

@@ -5,17 +5,18 @@
 
 namespace :escargot do
   desc "indexes the models"
-  task :index, :models, :needs => [:environment, :load_all_models] do |t, args|
+  task :index, :models, :batch_size, :needs => [:environment, :load_all_models] do |t, args|
+    batch_size = args[:batch_size] ? args[:batch_size].to_i : 1000
     each_indexed_model(args) do |model|
-      puts "Indexing #{model}"
-      Escargot::LocalIndexing.create_index_for_model(model)
+      puts $elastic_search_client.respond_to?(:bulk) ? "Bulk indexing #{model} in batches of #{batch_size} (local)" : "Incrementally indexing #{model} (local)"
+      Escargot::LocalIndexing.create_index_for_model(model, :batch_size => batch_size)
     end
   end
 
   desc "indexes the models"
   task :distributed_index, :models, :needs => [:environment, :load_all_models] do |t, args|
     each_indexed_model(args) do |model|
-      puts "Indexing #{model}"
+      puts "Indexing #{model} (distributed)"
       Escargot::DistributedIndexing.create_index_for_model(model)
     end
   end
