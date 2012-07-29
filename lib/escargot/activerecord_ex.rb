@@ -3,8 +3,10 @@ require 'will_paginate/collection'
 module Escargot
   module ActiveRecordExtensions
 
-    def self.included(base)
-      base.send :extend, ClassMethods
+    extend ActiveSupport::Concern
+  
+    included do
+      
     end
 
     module ClassMethods
@@ -12,6 +14,7 @@ module Escargot
       attr_accessor :update_index_policy
       attr_accessor :mapping
       attr_accessor :index_options
+      attr_accessor :indexing_options
 
       # defines an elastic search index. Valid options:
       #
@@ -38,31 +41,45 @@ module Escargot
       #
 
       def elastic_index(options = {})
-        Escargot.register_model(self)
-
-        options.symbolize_keys!
-        send :include, InstanceMethods
-        @index_name = options[:index_name] || self.name.underscore.gsub(/\//,'-')
-        @update_index_policy = options.include?(:updates) ? options[:updates] : :immediate
         
-        if @update_index_policy
-          after_save :update_index
-          after_destroy :delete_from_index
+        options.symbolize_keys!
+        Escargot.register_model(self)
+        
+        if respond_to?('single_collection_inherited?') and single_collection_inherited?
+          ivars = %w[@index_name @update_index_policy @index_options @indexing_options @mapping]
+          ivars.each do |ivar|
+            if passed_option = options[ivar[1..-1].to_sym]
+              instance_variable_set ivar, passed_option
+            else
+              instance_variable_set ivar, superclass.instance_variable_get(ivar)
+            end
+          end
+        else
+          @index_name = options[:index_name] || self.name.underscore.gsub(/\//,'-')
+          @update_index_policy = options.include?(:updates) ? options[:updates] : :immediate
+          
+          if @update_index_policy
+            after_save :update_index
+            after_destroy :delete_from_index
+          end
+          
+          @index_options    = options[:index_options]    || {}
+          @indexing_options = options[:indexing_options] || {}
+          @mapping          = options[:mapping]          || false
         end
-        @index_options = options[:index_options] || {}
-        @mapping = options[:mapping] || false
+        
       end
 
       def search(query, options={})
-        Escargot.search(query, options.merge({:index => self.index_name, :type => elastic_search_type}), true)
+        Escargot.search(query, options.reverse_merge!(:index => self.index_name, :type => elastic_search_type), true)
       end
       
       def search_hits(query, options = {})
-        Escargot.search_hits(query, options.merge({:index => self.index_name, :type => elastic_search_type}), true)
+        Escargot.search_hits(query, options.reverse_merge!(:index => self.index_name, :type => elastic_search_type), true)
       end  
 
       def search_count(query = "*", options = {})
-        Escargot.search_count(query, options.merge({:index => self.index_name, :type => elastic_search_type}), true)
+        Escargot.search_count(query, options.reverse_merge!(:index => self.index_name, :type => elastic_search_type), true)
       end
 
       def facets(fields_list, options = {})
@@ -105,9 +122,14 @@ module Escargot
       def create_index_version
         index_version = $elastic_search_client.create_index_version(@index_name, @index_options)
         if @mapping
-          $elastic_search_client.update_mapping(@mapping, :index => index_version, :type => elastic_search_type)
+          update_mapping(index_version)
         end
         index_version
+      end
+      
+      def update_mapping(index_version = nil)
+        index_version ||= $elastic_search_client.current_index_version(index_name)
+        $elastic_search_client.update_mapping(@mapping, :index => index_version, :type => elastic_search_type)
       end
       
       # deletes all index versions for this model and the alias (if exist)
@@ -139,65 +161,77 @@ module Escargot
         $elastic_search_client.optimize(index_name)
       end
       
-      private
-        def elastic_search_type
-          self.name.underscore.singularize.gsub(/\//,'-')
-        end
+      def elastic_search_type
+        self.name.underscore.singularize.gsub(/\//,'-')
+      end
 
     end
 
-    module InstanceMethods
+    # updates the index using the appropiate policy
+    def update_index
+      if self.class.update_index_policy == :immediate_with_refresh
+        local_index_in_elastic_search(:refresh => true)
+      elsif self.class.update_index_policy == :enqueue
+        Resque.enqueue(DistributedIndexing::ReIndexDocuments, self.class.to_s, [self.id])
+      else
+        local_index_in_elastic_search
+      end
+    end
 
-      # updates the index using the appropiate policy
-      def update_index
-        if self.class.update_index_policy == :immediate_with_refresh
-          local_index_in_elastic_search(:refresh => true)
-        elsif self.class.update_index_policy == :enqueue
-          Resque.enqueue(DistributedIndexing::ReIndexDocuments, self.class.to_s, [self.id])
-        else
-          local_index_in_elastic_search
-        end
+    # deletes the document from the index using the appropiate policy ("simple" or "distributed")
+    def delete_from_index
+      if self.class.update_index_policy == :immediate_with_refresh
+        self.class.delete_id_from_index(self.id, :refresh => true)
+        # As of Oct 25 2010, :refresh => true is not working
+        self.class.refresh_index()
+      elsif self.class.update_index_policy == :enqueue
+        Resque.enqueue(DistributedIndexing::ReIndexDocuments, self.class.to_s, [self.id])
+      else
+        self.class.delete_id_from_index(self.id)
+      end
+    end
+
+    def local_index_in_elastic_search(options = {})
+      
+      default_options = {
+        :index => self.class.index_name,
+        :type  => self.class.elastic_search_type,
+        :id    => self.id.to_s,
+      }
+      
+      options.reverse_merge! default_options
+      
+      if options[:indexing_options]
+        indexing_options = options.delete(:indexing_options)
+      else
+        indexing_options = self.respond_to?(:indexing_options) ? self.indexing_options : {}
+      end
+      
+      options.merge! indexing_options
+      
+      unless doc = options.delete(:doc)
+        doc = self.respond_to?(:indexed_attributes) ? self.indexed_attributes : self.attributes
+      end
+      
+      #bulk-ready client passed?
+      if options.has_key?(:bulk_client)
+        bulk_loading = true
+        client = options.delete(:bulk_client)
+      else
+        bulk_loading = false
+        #doc = doc.to_json
+        client = $elastic_search_client
       end
 
-      # deletes the document from the index using the appropiate policy ("simple" or "distributed")
-      def delete_from_index
-        if self.class.update_index_policy == :immediate_with_refresh
-          self.class.delete_id_from_index(self.id, :refresh => true)
-          # As of Oct 25 2010, :refresh => true is not working
-          self.class.refresh_index()
-        elsif self.class.update_index_policy == :enqueue
-          Resque.enqueue(DistributedIndexing::ReIndexDocuments, self.class.to_s, [self.id])
-        else
-          self.class.delete_id_from_index(self.id)
-        end
-      end
+      client.index(doc, options)
 
-      def local_index_in_elastic_search(options = {})
-        options[:index] ||= self.class.index_name
-        options[:type]  ||= self.class.name.underscore.singularize.gsub(/\//,'-')
-        options[:id]    ||= self.id.to_s
+      ## !!!!! passing :refresh => true should make ES auto-refresh only the affected
+      ## shards but as of Oct 25 2010 with ES 0.12 && rubberband 0.0.2 that's not the case
+      if options[:refresh] and not bulk_loading
+        self.class.refresh_index(options[:index])
+      end
         
-        #bulk-ready client passed?
-        if options.has_key?(:bulk_client)
-          bulk_loading = true
-          doc = self.respond_to?(:indexed_attributes) ? self.indexed_attributes : self.attributes
-          client = options.delete(:bulk_client)
-        else
-          bulk_loading = false
-          doc = self.respond_to?(:indexed_json_document) ? self.indexed_json_document : self.to_json
-          client = $elastic_search_client
-        end
-
-        client.index(doc, options)
-
-        ## !!!!! passing :refresh => true should make ES auto-refresh only the affected
-        ## shards but as of Oct 25 2010 with ES 0.12 && rubberband 0.0.2 that's not the case
-        if options[:refresh] and not bulk_loading
-          self.class.refresh_index(options[:index])
-        end
-          
-      end
-
     end
+
   end
 end
