@@ -7,13 +7,13 @@ module Escargot
 
       index_version = model.create_index_version
 
-      if $elastic_search_client.respond_to?(:bulk)
+      if Escargot.client.respond_to?(:bulk)
         bulk_index(model, index_version, options)
       else
         incremental_index(model, index_version)
       end
 
-      $elastic_search_client.deploy_index_version(model.index_name, index_version)
+      Escargot.client.deploy_index_version(model.index_name, index_version)
     end
 
     def LocalIndexing.incremental_index(model, index_version)
@@ -26,7 +26,7 @@ module Escargot
 
     def LocalIndexing.bulk_index(model, index_version, options = {})
       model.find_in_batches(options) do |batch|
-        $elastic_search_client.bulk do |bulk_client|
+        Escargot.client.bulk do |bulk_client|
           batch.each do |record|
             record.local_index_in_elastic_search(:index => index_version, :bulk_client => bulk_client)
           end

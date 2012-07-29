@@ -8,7 +8,7 @@ module Escargot
       options.reverse_merge!(:fields => :id)
       model.find_in_batches(options) do |batch|
         ids = model.serialize_ids(batch) if model.respond_to?(:serialize_ids)
-        if $elastic_search_client.respond_to?(:bulk)
+        if Escargot.client.respond_to?(:bulk)
           BulkIndexDocuments.perform_async(model.to_s, ids, index_version)
         else
           IncrementalIndexDocuments.perform_async(model.to_s, ids, index_version)
@@ -45,7 +45,7 @@ module Escargot
       def perform(model_name, ids, index_version)
         model = model_name.constantize
         ids   = model.deserialize_ids(ids) if model.respond_to?(:deserialize_ids)
-        $elastic_search_client.bulk do |bulk_client|
+        Escargot.client.bulk do |bulk_client|
           model.all(:id => ids).each do |record|
             record.local_index_in_elastic_search(:index => index_version, :bulk_client => bulk_client)
           end
@@ -79,21 +79,11 @@ module Escargot
       sidekiq_options queue: "indexing"
       sidekiq_options retry: false
       
-      def perform(index, index_version)
-        $elastic_search_client.deploy_index_version(index, index_version)
+      def perform(index, index_version, prune = false)
+        Escargot.client.deploy_index_version(index, index_version)
+        Escargot.client.prune_index_versions(index) if prune
       end
     end
-    
-    class PruneIndexVersions
-      include Sidekiq::Worker
-      sidekiq_options queue: "indexing"
-      sidekiq_options retry: false
-      
-      def perform(index)
-        $elastic_search_client.prune_index_versions(index)
-      end
-    end
-
     
   end
 

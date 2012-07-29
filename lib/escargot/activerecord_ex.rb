@@ -97,7 +97,7 @@ module Escargot
           options[:facets][field] = {:terms => {:field => field, :size => size}}
         end
 
-        hits = $elastic_search_client.search(options, {:index => self.index_name, :type => elastic_search_type})
+        hits = Escargot.client.search(options, {:index => self.index_name, :type => elastic_search_type})
         out = {}
         
         fields_list.each do |field|
@@ -115,12 +115,12 @@ module Escargot
       #
       # http://www.elasticsearch.com/docs/elasticsearch/rest_api/admin/indices/refresh/
       def refresh_index(index_version = nil)
-        $elastic_search_client.refresh(index_version || index_name)
+        Escargot.client.refresh(index_version || index_name)
       end
       
       # creates a new index version for this model and sets the mapping options for the type
       def create_index_version
-        index_version = $elastic_search_client.create_index_version(@index_name, @index_options)
+        index_version = Escargot.client.create_index_version(@index_name, @index_options)
         if @mapping
           update_mapping(index_version)
         end
@@ -128,24 +128,24 @@ module Escargot
       end
       
       def update_mapping(index_version = nil)
-        index_version ||= $elastic_search_client.current_index_version(index_name)
-        $elastic_search_client.update_mapping(@mapping, :index => index_version, :type => elastic_search_type)
+        index_version ||= Escargot.client.current_index_version(index_name)
+        Escargot.client.update_mapping(@mapping, :index => index_version, :type => elastic_search_type)
       end
       
       # deletes all index versions for this model and the alias (if exist)
       def delete_index
         # set current version to delete alias later
-        current_version = $elastic_search_client.current_index_version(index_name)
+        current_version = Escargot.client.current_index_version(index_name)
 
         # deletes any index version and the alias
-        $elastic_search_client.index_versions(index_name).each{|index_version|
-          $elastic_search_client.alias_index(:remove => {index_version => index_name}) if (index_version == current_version)
-          $elastic_search_client.delete_index(index_version)
+        Escargot.client.index_versions(index_name).each{|index_version|
+          Escargot.client.alias_index(:remove => {index_version => index_name}) if (index_version == current_version)
+          Escargot.client.delete_index(index_version)
         }
 
         # and delete the index itself if it exists
         begin
-          $elastic_search_client.delete_index(index_name)
+          Escargot.client.delete_index(index_name)
         rescue ElasticSearch::RequestError
           # it's ok, this means that the index doesn't exist
         end
@@ -154,11 +154,11 @@ module Escargot
       def delete_id_from_index(id, options = {})
         options[:index] ||= self.index_name
         options[:type]  ||= elastic_search_type
-        $elastic_search_client.delete(id.to_s, options)
+        Escargot.client.delete(id.to_s, options)
       end
       
       def optimize_index
-        $elastic_search_client.optimize(index_name)
+        Escargot.client.optimize(index_name)
       end
       
       def elastic_search_type
@@ -220,7 +220,7 @@ module Escargot
       else
         bulk_loading = false
         #doc = doc.to_json
-        client = $elastic_search_client
+        client = Escargot.client
       end
 
       client.index(doc, options)

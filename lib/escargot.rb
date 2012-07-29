@@ -16,6 +16,14 @@ module Escargot
     @indexed_models << model
   end
 
+  def self.client=(new_connection)
+    @@client = new_connection
+  end
+  
+  def self.client
+    Thread.current[:escargot_client] ||= ElasticSearch.new("http://localhost:9200")
+  end
+
   def self.indexed_models
     @indexed_models || []
   end
@@ -45,7 +53,7 @@ module Escargot
       query_dsl = query.delete(:query_dsl)
       query = {:query => query} if (query_dsl.nil? || query_dsl)
     end
-    $elastic_search_client.search(query, options)
+    Escargot.client.search(query, options)
   end
 
   # search returns a will_paginate collection of ActiveRecord objects for the search results
@@ -93,7 +101,7 @@ module Escargot
       end
       options = options.merge({:index => models.map(&:index_name).join(',')})
     end
-    $elastic_search_client.count(query, options)
+    Escargot.client.count(query, options)
   end
 
   private
