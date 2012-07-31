@@ -6,7 +6,7 @@ module Escargot
     extend ActiveSupport::Concern
   
     included do
-      
+      SCHEMA_CHECK_INTERVAL ||= 5.minutes
     end
 
     module ClassMethods
@@ -15,6 +15,9 @@ module Escargot
       attr_accessor :mapping
       attr_accessor :index_options
       attr_accessor :indexing_options
+      
+      attr_accessor :current_schema_version
+      attr_accessor :previous_schema_version
 
       # defines an elastic search index. Valid options:
       #
@@ -66,20 +69,72 @@ module Escargot
           @index_options    = options[:index_options]    || {}
           @indexing_options = options[:indexing_options] || {}
           @mapping          = options[:mapping]          || false
+          
+          @current_schema_version  = options[:current_schema_version]  || "0"
+          @previous_schema_version = options[:previous_schema_version] || "0"
         end
         
       end
 
+      def all_index_versions
+        Escargot.client.index_versions(index_name)
+      end
+
+      def current_index_name
+        "current_#{index_name}"
+      end
+      
+      def previous_index_name
+        "previous_#{index_name}"
+      end
+      
+      def index_with_target_schema_ready?
+        #TODO MAKE SURE THIS REPORTS true/false CORRECTLY THROUGHOUT INDEX MIGRATION
+        #  TRUE when the new index is in place, and this app can pass properly structured queries to it
+        #  FALSE when the new index isn't ready
+        if @schema_checked_at.nil? or Time.now - @schema_checked_at > self::SCHEMA_CHECK_INTERVAL
+          @schema_checked_at = Time.now
+          @current_schema_is_target = current_index_schema_version == @current_schema_version
+        else
+          @current_schema_is_target
+        end
+      end
+      
+      def current_index_schema_version
+        Escargot.client.current_index_schema_version(current_index_name)
+      end
+      
+      def current_index_version
+        Escargot.client.current_index_version(current_index_name)
+      end
+      
+      def previous_index_version
+        Escargot.client.current_index_version(previous_index_name)
+      end
+      
+      def current_search_index_name
+        #TODO make searches use this rather than index_name
+        if index_with_target_schema_ready?
+          current_index_name
+        else
+          previous_index_name
+        end
+      end
+  
+      def prune_old_indices
+        Escargot.client.prune_index_versions(index_name)
+      end
+
       def search(query, options={})
-        Escargot.search(query, options.reverse_merge!(:index => self.index_name, :type => elastic_search_type), true)
+        Escargot.search(query, options.reverse_merge!(:index => current_search_index_name, :type => elastic_search_type), true)
       end
       
       def search_hits(query, options = {})
-        Escargot.search_hits(query, options.reverse_merge!(:index => self.index_name, :type => elastic_search_type), true)
+        Escargot.search_hits(query, options.reverse_merge!(:index => current_search_index_name, :type => elastic_search_type), true)
       end  
 
       def search_count(query = "*", options = {})
-        Escargot.search_count(query, options.reverse_merge!(:index => self.index_name, :type => elastic_search_type), true)
+        Escargot.search_count(query, options.reverse_merge!(:index => current_search_index_name, :type => elastic_search_type), true)
       end
 
       def facets(fields_list, options = {})
@@ -97,7 +152,7 @@ module Escargot
           options[:facets][field] = {:terms => {:field => field, :size => size}}
         end
 
-        hits = Escargot.client.search(options, {:index => self.index_name, :type => elastic_search_type})
+        hits = Escargot.client.search(options, {:index => current_search_index_name, :type => elastic_search_type})
         out = {}
         
         fields_list.each do |field|
@@ -115,12 +170,12 @@ module Escargot
       #
       # http://www.elasticsearch.com/docs/elasticsearch/rest_api/admin/indices/refresh/
       def refresh_index(index_version = nil)
-        Escargot.client.refresh(index_version || index_name)
+        Escargot.client.refresh(index_version || current_search_index_name)
       end
       
       # creates a new index version for this model and sets the mapping options for the type
       def create_index_version
-        index_version = Escargot.client.create_index_version(@index_name, @index_options)
+        index_version  = Escargot.client.create_index_version(@index_name, @index_options, @current_schema_version)
         if @mapping
           update_mapping(index_version)
         end
@@ -128,37 +183,37 @@ module Escargot
       end
       
       def update_mapping(index_version = nil)
-        index_version ||= Escargot.client.current_index_version(index_name)
+        index_version ||= current_index_version
         Escargot.client.update_mapping(@mapping, :index => index_version, :type => elastic_search_type)
       end
       
       # deletes all index versions for this model and the alias (if exist)
       def delete_index
         # set current version to delete alias later
-        current_version = Escargot.client.current_index_version(index_name)
+        current_version = current_index_version
 
         # deletes any index version and the alias
-        Escargot.client.index_versions(index_name).each{|index_version|
-          Escargot.client.alias_index(:remove => {index_version => index_name}) if (index_version == current_version)
+        all_index_versions.each{|index_version|
+          Escargot.client.alias_index(:remove => {index_version => current_index_name}) if (index_version == current_version)
           Escargot.client.delete_index(index_version)
         }
 
         # and delete the index itself if it exists
         begin
-          Escargot.client.delete_index(index_name)
+          Escargot.client.delete_index(current_index_name)
         rescue ElasticSearch::RequestError
           # it's ok, this means that the index doesn't exist
         end
       end
       
       def delete_id_from_index(id, options = {})
-        options[:index] ||= self.index_name
+        options[:index] ||= current_search_index_name
         options[:type]  ||= elastic_search_type
         Escargot.client.delete(id.to_s, options)
       end
       
       def optimize_index
-        Escargot.client.optimize(index_name)
+        Escargot.client.optimize(current_index_name)
       end
       
       def elastic_search_type
@@ -172,7 +227,7 @@ module Escargot
       if self.class.update_index_policy == :immediate_with_refresh
         local_index_in_elastic_search(:refresh => true)
       elsif self.class.update_index_policy == :enqueue
-        Resque.enqueue(DistributedIndexing::ReIndexDocuments, self.class.to_s, [self.id])
+        DistributedIndexing::ReIndexDocuments.perform_in(1.seconds, self.class.to_s, [self.id.to_s])
       else
         local_index_in_elastic_search
       end
@@ -194,24 +249,15 @@ module Escargot
     def local_index_in_elastic_search(options = {})
       
       default_options = {
-        :index => self.class.index_name,
         :type  => self.class.elastic_search_type,
         :id    => self.id.to_s,
       }
       
-      options.reverse_merge! default_options
+      #we create clone here to avoid side-effects
+      options = options.reverse_merge default_options
       
-      if options[:indexing_options]
-        indexing_options = options.delete(:indexing_options)
-      else
-        indexing_options = self.respond_to?(:indexing_options) ? self.indexing_options : {}
-      end
-      
+      indexing_options = options.delete(:indexing_options) || ( respond_to?(:indexing_options) ? indexing_options : {} )
       options.merge! indexing_options
-      
-      unless doc = options.delete(:doc)
-        doc = self.respond_to?(:indexed_attributes) ? self.indexed_attributes : self.attributes
-      end
       
       #bulk-ready client passed?
       if options.has_key?(:bulk_client)
@@ -219,12 +265,53 @@ module Escargot
         client = options.delete(:bulk_client)
       else
         bulk_loading = false
-        #doc = doc.to_json
         client = Escargot.client
       end
-
-      client.index(doc, options)
-
+      
+      
+      doc = options.delete(:doc) || ( respond_to?(:indexed_attributes) ? indexed_attributes : attributes )
+      if options[:index]
+        #if an index is specified we only index to that one
+        # and we ALWAYS use the latest #indexed_attributes method as we only ever specify the index to write to
+        # when we are building a new index
+        client.index(doc, options)
+        
+      else
+        #we need to do different things depending on whether
+        # a) we are midway through building a new index (indicated by there being more than one)
+        # b) we are changing from one schemea to another (indicated by the provision of two different styles of doc)
+        indices        = self.class.all_index_versions.first(2)
+        have_old_style = options[:old_style_doc] || respond_to?(:old_style_indexed_attributes)
+        
+        docs = indices.map do |index_version|
+          
+          schema = Escargot.client.extract_schema_version_from_index(index_version)
+          case schema
+          when self.class.current_schema_version
+            :doc
+          when self.class.previous_schema_version
+            :old_style_doc if have_old_style
+          end
+          
+        end
+        
+        #only build old_style_doc if we actually need it
+        if docs.include?(:old_style_doc)
+          old_style_doc = options.delete(:old_style_doc) || old_style_indexed_attributes
+        end
+        
+        indices.each_with_index do |index_version, i|
+          options[:index] = index_version
+          curr_doc = case docs[i]
+          when :doc
+            client.index(doc, options)
+          when :old_style_doc
+            client.index(old_style_doc, options)
+          end
+        end
+        
+      end
+      
       ## !!!!! passing :refresh => true should make ES auto-refresh only the affected
       ## shards but as of Oct 25 2010 with ES 0.12 && rubberband 0.0.2 that's not the case
       if options[:refresh] and not bulk_loading
@@ -235,3 +322,47 @@ module Escargot
 
   end
 end
+
+
+        
+#         
+        # can_handle_current  = schemas.first == @current_schema_version
+        # can_handle_previous = schemas.last  == @previous_schema_version
+#         
+        # unless can_handle_current or can_handle_previous
+          # schemas_in_codebase = [@current_schema_version, @previous_schema_version]
+          # raise "can't index:\n#{self}\nbecause this codebase covers schemas #{schemas_in_codebase}, while the latest indices in ES are #{schemas}"
+        # end
+#         
+        # new_index_ready = respond_to?(:index_with_target_schema_ready?) ? index_with_target_schema_ready? : nil
+        # have_old_style  = options[:old_style_doc] || respond_to?(:old_style_indexed_attributes)
+#         
+        # if can_handle_previous and indices.length == 1
+#           
+          # if have_new_style and not can_handle_previous
+            # #we have the code for the old_style_doc, but we only have one index
+            # # because index_with_target_schema_ready? == true, we assume the migration is over and so we use the lastest doc style
+            # docs = [:doc]
+#             
+          # else
+            # #we have loaded the new app, but we haven't started to build the new index yet
+            # #so we carry on using the old_style_doc
+            # docs = [:old_style_doc]
+#             
+          # end
+#           
+        # elsif have_old_style and can_handle_previous and indices.length == 2
+          # #we must be mid-migration as there are two indices, so we send the new and old styles to their respective indices
+          # docs = [:doc, :old_style_doc]
+#           
+        # else
+          # #if we don't have an old_style_doc, but we do have 2 indices then we must be building an index with the same schema
+          # # or a schema change that won't break existing search code
+          # # or perhaps just a mapping change in ES
+#           
+          # #if we only have 1 index, and no old_style_doc, then we're not in the middle of an index build
+# 
+          # #either way, we just send the same doc to however many indices there are
+          # docs = [:doc, :doc]
+# 
+        # end

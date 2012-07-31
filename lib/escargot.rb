@@ -46,7 +46,7 @@ module Escargot
         register_all_models
         models = @indexed_models
       end
-      options = options.merge({:index => models.map(&:index_name).join(',')})
+      options = options.merge({:index => models.map(&:current_search_index_name).join(',')})
     end
     
     if query.kind_of?(Hash)
@@ -70,12 +70,27 @@ module Escargot
     results
   end
   
+  def self.group_hits_by_type(hits)
+    hits.each_with_object(Hash.new { |hash, type| hash[type] = [] }) do |hit, hash|
+      hash[hit._type] << hit
+    end
+  end
+  
   def self.find_hits_in_db(hits)
     #fetch records from db in one call and then reorder to match search result ordering
     return Array.new if hits.empty?
-    model_class = get_model_class_from_hit_type(hits.first)
-    ranked_ids = hits.map(&:_id) #TODO check whether we have _id or id with active record...
-    unordered_records = model_class.find(ranked_ids)
+    
+    hits_by_type = group_hits_by_type(hits)
+    
+    unordered_records = hits_by_type.map do |type, hits_of_type|
+      model_class = get_model_class_from_hit_type(type)
+      ids = hits_of_type.map(&:_id)
+      ids = model_class.deserialize_ids(ids) if model_class.respond_to?(:deserialize_ids)
+      model_class.find! ids
+    end.flatten
+    
+    ranked_ids = hits.map(&:_id)
+
     if unordered_records.is_a?(Array)
       records = unordered_records.reorder_by(ranked_ids, &Proc.new {|r| r.id.to_s})
     elsif unordered_records.nil?
@@ -86,8 +101,8 @@ module Escargot
     records
   end
   
-  def self.get_model_class_from_hit_type(hit)
-    model_class = hit._type.gsub(/-/,'/').classify.constantize
+  def self.get_model_class_from_hit_type(type)
+    model_class = type.gsub(/-/,'/').classify.constantize
   end
 
   # counts the number of results for this query.
@@ -99,7 +114,7 @@ module Escargot
         register_all_models
         models = @indexed_models
       end
-      options = options.merge({:index => models.map(&:index_name).join(',')})
+      options = options.merge({:index => models.map(&:current_search_index_name).join(',')})
     end
     Escargot.client.count(query, options)
   end

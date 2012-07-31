@@ -16,12 +16,16 @@ module Escargot
       end
     end
 
-    def DistributedIndexing.create_index_for_model(model)
-      #load_dependencies
-      index_version = model.create_index_version
-      enqueue_all_records(model, index_version)
-      DeployNewVersion.perform_async(model.index_name, index_version)
-    end
+    #TODO move the code in TopicMap in here
+    # give it a yield so I can set my other jobs off
+    # and fix the rake tasks so they can call this
+    
+    # def DistributedIndexing.create_index_for_model(model)
+      # #load_dependencies
+      # index_version = model.create_index_version
+      # enqueue_all_records(model, index_version)
+      # DeployNewVersion.perform_async(model.index_name, index_version)
+    # end
 
     class IncrementalIndexDocuments
       include Sidekiq::Worker
@@ -57,7 +61,7 @@ module Escargot
     class ReIndexDocuments
       include Sidekiq::Worker
       sidekiq_options queue: "nrt"
-      sidekiq_options retry: false
+      sidekiq_options retry: true
 
       def perform(model_name, ids)
         model = model_name.constantize
@@ -68,19 +72,32 @@ module Escargot
           ids_found << record.id
         end
 
-        (ids - ids_found).each do |id|
+        missing_ids = []
+        ids.each { |id| missing_ids << id unless ids_found.any? { |found_id| found_id == id } }
+
+        missing_ids.each do |id|
           model.delete_id_from_index(id)
         end
       end
     end
-
+    
     class DeployNewVersion
       include Sidekiq::Worker
       sidekiq_options queue: "indexing"
       sidekiq_options retry: false
       
       def perform(index, index_version, prune = false)
-        Escargot.client.deploy_index_version(index, index_version)
+        Escargot.client.deploy_index_version("current_#{index}", index_version)
+      end
+    end
+
+    class RetireOldVersion
+      include Sidekiq::Worker
+      sidekiq_options queue: "indexing"
+      sidekiq_options retry: false
+      
+      def perform(index, index_version, prune = false)
+        Escargot.client.deploy_index_version("previous_#{index}", index_version)
         Escargot.client.prune_index_versions(index) if prune
       end
     end
