@@ -85,7 +85,7 @@ module Escargot
     unordered_records = hits_by_type.map do |type, hits_of_type|
       model_class = get_model_class_from_hit_type(type)
       ids = hits_of_type.map(&:_id)
-      ids = model_class.deserialize_ids(ids) if model_class.respond_to?(:deserialize_ids)
+      ids.map! { |id| model_class.deserialize_id(id) } if model_class.respond_to?(:deserialize_id)
       model_class.find! ids
     end.flatten
     

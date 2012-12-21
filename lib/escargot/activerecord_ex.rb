@@ -49,7 +49,7 @@ module Escargot
         Escargot.register_model(self)
         
         if respond_to?('single_collection_inherited?') and single_collection_inherited?
-          ivars = %w[@index_name @update_index_policy @index_options @indexing_options @mapping]
+          ivars = %w[@index_name @update_index_policy @index_options @indexing_options @mapping @current_schema_version @previous_schema_version]
           ivars.each do |ivar|
             if passed_option = options[ivar[1..-1].to_sym]
               instance_variable_set ivar, passed_option
@@ -69,7 +69,6 @@ module Escargot
           @index_options    = options[:index_options]    || {}
           @indexing_options = options[:indexing_options] || {}
           @mapping          = options[:mapping]          || false
-          
           @current_schema_version  = options[:current_schema_version]  || "0"
           @previous_schema_version = options[:previous_schema_version] || "0"
         end
@@ -137,33 +136,33 @@ module Escargot
         Escargot.search_count(query, options.reverse_merge!(:index => current_search_index_name, :type => elastic_search_type), true)
       end
 
-      def facets(fields_list, options = {})
-        size = options.delete(:size) || 10
-        fields_list = [fields_list] unless fields_list.kind_of?(Array)
-        
-        if !options[:query]
-          options[:query] = {:match_all => { } }
-        elsif options[:query].kind_of?(String)
-          options[:query] = {:query_string => {:query => options[:query]}}
-        end
-
-        options[:facets] = {}
-        fields_list.each do |field|
-          options[:facets][field] = {:terms => {:field => field, :size => size}}
-        end
-
-        hits = Escargot.client.search(options, {:index => current_search_index_name, :type => elastic_search_type})
-        out = {}
-        
-        fields_list.each do |field|
-          out[field.to_sym] = {}
-          hits.facets[field.to_s]["terms"].each do |term|
-            out[field.to_sym][term["term"]] = term["count"]
-          end
-        end
-
-        out
-      end
+      # def facets(fields_list, options = {})
+        # size = options.delete(:size) || 10
+        # fields_list = [fields_list] unless fields_list.kind_of?(Array)
+#         
+        # if !options[:query]
+          # options[:query] = {:match_all => { } }
+        # elsif options[:query].kind_of?(String)
+          # options[:query] = {:query_string => {:query => options[:query]}}
+        # end
+# 
+        # options[:facets] = {}
+        # fields_list.each do |field|
+          # options[:facets][field] = {:terms => {:field => field, :size => size}}
+        # end
+# 
+        # hits = Escargot.client.search(options, {:index => current_search_index_name, :type => elastic_search_type})
+        # out = {}
+#         
+        # fields_list.each do |field|
+          # out[field.to_sym] = {}
+          # hits.facets[field.to_s]["terms"].each do |term|
+            # out[field.to_sym][term["term"]] = term["count"]
+          # end
+        # end
+# 
+        # out
+      # end
 
       # explicitly refresh the index, making all operations performed since the last refresh
       # available for search
@@ -184,7 +183,7 @@ module Escargot
       
       def update_mapping(index_version = nil)
         index_version ||= current_index_version
-        Escargot.client.update_mapping(@mapping, :index => index_version, :type => elastic_search_type)
+        Escargot.client.update_mapping(@mapping, :index => index_version, :type => elastic_search_type) if @mapping.present?
       end
       
       # deletes all index versions for this model and the alias (if exist)
@@ -224,9 +223,10 @@ module Escargot
 
     # updates the index using the appropiate policy
     def update_index
-      if self.class.update_index_policy == :immediate_with_refresh
+      case self.class.update_index_policy
+      when :immediate_with_refresh
         local_index_in_elastic_search(:refresh => true)
-      elsif self.class.update_index_policy == :enqueue
+      when :enqueue
         DistributedIndexing::ReIndexDocuments.perform_in(1.seconds, self.class.to_s, [self.id.to_s])
       else
         local_index_in_elastic_search
@@ -235,11 +235,12 @@ module Escargot
 
     # deletes the document from the index using the appropiate policy ("simple" or "distributed")
     def delete_from_index
-      if self.class.update_index_policy == :immediate_with_refresh
+      case self.class.update_index_policy
+      when :immediate_with_refresh
         self.class.delete_id_from_index(self.id, :refresh => true)
         # As of Oct 25 2010, :refresh => true is not working
         self.class.refresh_index()
-      elsif self.class.update_index_policy == :enqueue
+      when :enqueue
         Resque.enqueue(DistributedIndexing::ReIndexDocuments, self.class.to_s, [self.id])
       else
         self.class.delete_id_from_index(self.id)

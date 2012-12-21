@@ -7,7 +7,8 @@ module Escargot
     def DistributedIndexing.enqueue_all_records(model, index_version, options = {})
       options.reverse_merge!(:fields => :id)
       model.find_in_batches(options) do |batch|
-        ids = model.serialize_ids(batch) if model.respond_to?(:serialize_ids)
+        ids = batch.map(&:id)
+        ids.map! { |id| model.serialize_id(id) } if model.respond_to?(:serialize_id)
         if Escargot.client.respond_to?(:bulk)
           BulkIndexDocuments.perform_async(model.to_s, ids, index_version)
         else
@@ -31,9 +32,11 @@ module Escargot
       include Sidekiq::Worker
       sidekiq_options queue: "indexing"
       sidekiq_options retry: false
+      sidekiq_options unique: true#, unique_job_expiration: 120 * 60 # 2 hours
 
       def perform(model_name, ids, index_version)
-        ids   = model.deserialize_ids(ids) if model.respond_to?(:deserialize_ids)
+        model = model_name.constantize
+        ids.map! { |id| model.deserialize_id(id) } if model.respond_to?(:deserialize_id)
         model = model_name.constantize
         model.all(:id => ids).each do |record|
           record.local_index_in_elastic_search(:index => index_version)
@@ -45,10 +48,11 @@ module Escargot
       include Sidekiq::Worker
       sidekiq_options queue: "indexing"
       sidekiq_options retry: false
-
+      sidekiq_options unique: true#, unique_job_expiration: 120 * 60 # 2 hours
+      
       def perform(model_name, ids, index_version)
         model = model_name.constantize
-        ids   = model.deserialize_ids(ids) if model.respond_to?(:deserialize_ids)
+        ids.map! { |id| model.deserialize_id(id) } if model.respond_to?(:deserialize_id)
         Escargot.client.bulk do |bulk_client|
           model.all(:id => ids).each do |record|
             record.local_index_in_elastic_search(:index => index_version, :bulk_client => bulk_client)
@@ -62,10 +66,11 @@ module Escargot
       include Sidekiq::Worker
       sidekiq_options queue: "nrt"
       sidekiq_options retry: true
+      sidekiq_options unique: true#, unique_job_expiration: 120 * 60 # 2 hours
 
       def perform(model_name, ids)
         model = model_name.constantize
-        ids   = model.deserialize_ids(ids) if model.respond_to?(:deserialize_ids)
+        ids.map! { |id| model.deserialize_id(id) } if model.respond_to?(:deserialize_id)
         ids_found = []
         model.all(:id => ids).each do |record|
           record.local_index_in_elastic_search
@@ -85,7 +90,8 @@ module Escargot
       include Sidekiq::Worker
       sidekiq_options queue: "indexing"
       sidekiq_options retry: false
-      
+      sidekiq_options unique: true#, unique_job_expiration: 120 * 60 # 2 hours
+            
       def perform(index, index_version, prune = false)
         Escargot.client.deploy_index_version("current_#{index}", index_version)
       end
@@ -95,6 +101,7 @@ module Escargot
       include Sidekiq::Worker
       sidekiq_options queue: "indexing"
       sidekiq_options retry: false
+      sidekiq_options unique: true#, unique_job_expiration: 120 * 60 # 2 hours
       
       def perform(index, index_version, prune = false)
         Escargot.client.deploy_index_version("previous_#{index}", index_version)
