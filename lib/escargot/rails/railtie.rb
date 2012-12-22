@@ -6,14 +6,12 @@ module Escargot
         ElasticSearch::Api::Hit.class_eval{include Escargot::HitExtensions}
         ElasticSearch::Client.class_eval{include Escargot::AdminIndexVersions}
         MongoMapper::Document.send :plugin, MongoMapperEsPlugin
-        init_elastic_search_client
       end
       
       ActiveSupport.on_load(:active_record) do
         ElasticSearch::Api::Hit.class_eval{include Escargot::HitExtensions}
         ElasticSearch::Client.class_eval{include Escargot::AdminIndexVersions}
         include(Escargot::ActiveRecordExtensions)
-        init_elastic_search_client
       end
     #ActiveSupport.on_load(:action_controller) do
     #  include(ElasticSearch::RequestLifecycle)
