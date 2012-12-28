@@ -17,7 +17,7 @@ module Escargot
   end
 
   def self.client=(new_connection)
-    @@client = new_connection
+    Thread.current[:escargot_client] = new_connection
   end
   
   def self.client
@@ -28,8 +28,8 @@ module Escargot
     path_to_elasticsearch_config_file = Rails.root.to_s + "/config/escargot.yml"
   
     unless File.exists?(path_to_elasticsearch_config_file)
-      Rails.logger.warn "No config/escargot.yaml file found, connecting to localhost:9200"
-      Escargot.client = ElasticSearch.new("http://localhost:9200") do |faraday|
+      #Rails.logger.warn "No config/escargot.yaml file found, connecting to localhost:9200"
+      Escargot.client = ElasticSearch.new("http://localhost:9200", :timeout => 20) do |faraday|
         faraday.adapter :patron
       end
     else 
