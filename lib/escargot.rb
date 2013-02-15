@@ -34,7 +34,7 @@ module Escargot
       end
     else 
       config = YAML.load_file(path_to_elasticsearch_config_file)
-      Escargot.client = ElasticSearch.new(config["host"] + ":" + config["port"].to_s, :timeout => 20) do |faraday|
+      Escargot.client = ElasticSearch.new(config["host"] + ":" + config["port"].to_s, config["timeout"] || 20) do |faraday|
         faraday.adapter :patron
       end
     end

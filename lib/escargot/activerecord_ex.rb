@@ -80,10 +80,12 @@ module Escargot
       end
 
       def current_index_name
+        raise "missing index name" unless index_name
         "current_#{index_name}"
       end
       
       def previous_index_name
+        raise "missing index name" unless index_name
         "previous_#{index_name}"
       end
       
@@ -222,8 +224,9 @@ module Escargot
     end
 
     # updates the index using the appropiate policy
-    def update_index
-      case self.class.update_index_policy
+    def update_index(policy = nil)
+      policy ||= self.class.update_index_policy
+      case policy
       when :immediate_with_refresh
         local_index_in_elastic_search(:refresh => true)
       when :enqueue
