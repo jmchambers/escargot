@@ -16,15 +16,12 @@ module MongoMapperEsPlugin
     def find_in_batches(options = {})
       
       query      = options[:query]      || {}
-      start      = options[:start]      || 0
       batch_size = options[:batch_size] || 1000
       fields     = *options[:fields]
       
-      begin
-        records = self.where(query).limit(batch_size).skip(start).fields(fields).to_a
-        yield records unless records.empty?
-        start += batch_size
-      end while records.size == batch_size
+      where(query).fields(fields).each_slice(batch_size) do |records|
+        yield records
+      end
       
     end
 
