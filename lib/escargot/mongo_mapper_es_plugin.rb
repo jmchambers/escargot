@@ -27,7 +27,7 @@ module MongoMapperEsPlugin
       
       collection.find(query, options) do |cursor|
         cursor.each_slice(batch_size) do |records|
-          yield records
+          yield records.map { |record| load record }
         end
       end
       
