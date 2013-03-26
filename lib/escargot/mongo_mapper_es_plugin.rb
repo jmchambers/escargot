@@ -15,12 +15,20 @@ module MongoMapperEsPlugin
     
     def find_in_batches(options = {})
       
-      query      = options[:query]      || {}
-      batch_size = options[:batch_size] || 1000
-      fields     = *options[:fields]
+      query      = options.delete(:query)      || {}
+      batch_size = options.delete(:batch_size) || 1000
       
-      where(query).fields(fields).each_slice(batch_size) do |records|
-        yield records
+      options.reverse_merge!(
+        :timeout => :false, #true|false, false by default as we're commonly iterrating over whole collections
+        #:fields  => [:_id]
+      )
+      
+      query = where(query).criteria_hash #do some MM normalization
+      
+      collection.find(query, options) do |cursor|
+        cursor.each_slice(batch_size) do |records|
+          yield records
+        end
       end
       
     end
