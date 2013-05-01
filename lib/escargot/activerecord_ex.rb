@@ -244,7 +244,7 @@ module Escargot
         # As of Oct 25 2010, :refresh => true is not working
         self.class.refresh_index()
       when :enqueue
-        DistributedIndexing::ReIndexDocuments.perform_async(self.class.to_s, [self.id.to_s])
+        DistributedIndexing::RemoveDocuments.perform_async(self.class.to_s, [self.id.to_s])
       else
         self.class.delete_id_from_index(self.id)
       end

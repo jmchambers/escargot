@@ -62,6 +62,20 @@ module Escargot
       
     end
 
+    class RemoveDocuments
+      include Sidekiq::Worker
+      sidekiq_options queue: "nrt"
+      sidekiq_options retry: true
+      sidekiq_options unique: true#, unique_job_expiration: 120 * 60 # 2 hours
+
+      def perform(model_name, ids, options = {})
+        model = model_name.constantize
+        ids.each do |id|
+          model.delete_id_from_index(id, options)
+        end
+      end
+    end
+
     class ReIndexDocuments
       include Sidekiq::Worker
       sidekiq_options queue: "nrt"
