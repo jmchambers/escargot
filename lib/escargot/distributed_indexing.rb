@@ -71,7 +71,7 @@ module Escargot
       def perform(model_name, ids, options = {})
         model = model_name.constantize
         ids.each do |id|
-          model.delete_id_from_index(id, options)
+          model.delete_id_from_index(id, options.with_indifferent_access)
         end
       end
     end
